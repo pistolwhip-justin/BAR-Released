@@ -1,1 +1,1 @@
-GitHub Actions workflow definitions for versioned BAR APK releases are stored in `workflows/`.
+GitHub Actions workflow definitions for versioned Bar Released APK releases are stored in `workflows/`.
