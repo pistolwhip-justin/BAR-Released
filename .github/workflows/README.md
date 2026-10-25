@@ -1,1 +1,1 @@
-Versioned GitHub Actions workflows build the pinned upstream BAR source and publish installable APKs to this repository's GitHub Releases.
+Versioned GitHub Actions workflows build the pinned upstream recorder source, apply the Bar Released branding and project-specific fixes, and publish installable APKs to this repository's GitHub Releases.
