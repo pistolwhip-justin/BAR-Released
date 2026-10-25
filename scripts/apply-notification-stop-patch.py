@@ -116,6 +116,6 @@ replace_once(
     "app/src/main/res/values/strings.xml",
     '    <string name="notification_action_resume">Resume</string>\n',
     '    <string name="notification_action_resume">Resume</string>\n'
-    '    <string name="notification_action_stop">Stop</string>\n',
+    '    <string name="notification_action_stop" translatable="false">Stop</string>\n',
 )
 print("Applied Stop action patch to RecorderService, Notifications, and strings.xml.")
