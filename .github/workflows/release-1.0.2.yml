@@ -1,0 +1,110 @@
+name: Release Bar Released 1.0.2 APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+concurrency:
+  group: bar-released-1.0.2
+  cancel-in-progress: false
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Guard immutable release
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.2 --repo "$GH_REPO" --json assets > assets.json 2>/dev/null; then
+            if jq -e '.assets[] | select(.name == "Bar-Released-1.0.2-debug.apk")' assets.json >/dev/null; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "Release already has the expected APK; leaving it unchanged."
+              exit 0
+            fi
+            echo "::error::v1.0.2 exists without the expected APK; refusing to alter it."
+            exit 1
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+      - name: Checkout this release repository
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/checkout@v6
+      - name: Checkout pinned upstream source
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: PatrykMis/BAR
+          ref: 4b6a49ab3e53e1862bd49f07ac4007c1cba8af5e
+          path: upstream/BAR
+          persist-credentials: false
+      - name: Apply notification Stop-action patch
+        if: steps.guard.outputs.skip != 'true'
+        run: python3 scripts/apply-notification-stop-patch.py
+      - name: Apply Bar Released branding and version
+        if: steps.guard.outputs.skip != 'true'
+        run: python3 scripts/apply-bar-released-branding.py
+      - name: Verify app name and version metadata
+        if: steps.guard.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in upstream/BAR/app/src/main/res/values*/strings.xml; do
+            grep -q '<string name="app_name">Bar Released</string>' "$file"
+            grep -q '<string name="app_name_full">Bar Released</string>' "$file"
+          done
+          grep -q 'versionCode = 3' upstream/BAR/app/build.gradle.kts
+          grep -q 'versionName = "1.0.2"' upstream/BAR/app/build.gradle.kts
+          grep -q 'notification_action_stop' upstream/BAR/app/src/main/res/values/strings.xml
+      - name: Set up JDK 25
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+          cache-dependency-path: upstream/BAR/gradle/wrapper/gradle-wrapper.properties
+      - name: Build and run upstream checks
+        if: steps.guard.outputs.skip != 'true'
+        working-directory: upstream/BAR
+        run: ./gradlew build --no-daemon
+      - name: Verify APK and calculate checksum
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          APK="upstream/BAR/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          mkdir -p release
+          cp "$APK" release/Bar-Released-1.0.2-debug.apk
+          sha256sum release/Bar-Released-1.0.2-debug.apk | tee release/Bar-Released-1.0.2-debug.apk.sha256
+      - name: Write release notes
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          cat > release-notes.md <<'NOTES'
+          ## Bar Released 1.0.2 — app rename
+
+          Based on upstream [BAR](https://github.com/PatrykMis/BAR) commit [4b6a49ab3e53e1862bd49f07ac4007c1cba8af5e](https://github.com/PatrykMis/BAR/commit/4b6a49ab3e53e1862bd49f07ac4007c1cba8af5e), with reproducible local patches maintained in this repository.
+
+          - Renames the displayed app name to **Bar Released** in all supported app-name resources and updates user-facing app-name references.
+          - Retains the notification Stop action validated in v1.0.1.
+          - Keeps application ID `com.patrykmis.bar.debug`; version metadata is 1.0.2 (versionCode 3).
+          - License: GPL-3.0-only; retain upstream copyright and license notices.
+          - Build: debug/sideloading APK signed with Gradle's debug key; not a production or Play Store build.
+          - Minimum Android version: Android 13 (API 33).
+          - SHA-256 checksum included as a release asset.
+
+          CI build success does not verify physical-device behavior. On the target phone, confirm the launcher/settings name is Bar Released and briefly regress-test Start, Pause, Resume, Stop, microphone release, and saved-file creation.
+          NOTES
+      - name: Publish versioned GitHub Release
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release create v1.0.2 release/Bar-Released-1.0.2-debug.apk release/Bar-Released-1.0.2-debug.apk.sha256 \
+            --repo "$GH_REPO" --title "Bar Released 1.0.2 — app rename" --notes-file release-notes.md
