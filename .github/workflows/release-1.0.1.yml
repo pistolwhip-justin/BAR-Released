@@ -1,0 +1,95 @@
+name: Release BAR 1.0.1 APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+concurrency:
+  group: bar-release-1.0.1
+  cancel-in-progress: false
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Guard immutable release
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.1 --repo "$GH_REPO" --json assets > assets.json 2>/dev/null; then
+            if jq -e '.assets[] | select(.name == "BAR-1.0.1-debug.apk")' assets.json >/dev/null; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "Release already has the expected APK; leaving it unchanged."
+              exit 0
+            fi
+            echo "::error::v1.0.1 exists without the expected APK; refusing to alter it."
+            exit 1
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+      - name: Checkout this release repository
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/checkout@v6
+      - name: Checkout pinned upstream BAR source
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: PatrykMis/BAR
+          ref: 4b6a49ab3e53e1862bd49f07ac4007c1cba8af5e
+          path: upstream/BAR
+          persist-credentials: false
+      - name: Apply notification Stop-action patch
+        if: steps.guard.outputs.skip != 'true'
+        run: python3 scripts/apply-notification-stop-patch.py
+      - name: Set up JDK 25
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+          cache-dependency-path: upstream/BAR/gradle/wrapper/gradle-wrapper.properties
+      - name: Build and run upstream checks
+        if: steps.guard.outputs.skip != 'true'
+        working-directory: upstream/BAR
+        run: ./gradlew build --no-daemon
+      - name: Verify APK and calculate checksum
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          APK="upstream/BAR/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          mkdir -p release
+          cp "$APK" release/BAR-1.0.1-debug.apk
+          sha256sum release/BAR-1.0.1-debug.apk | tee release/BAR-1.0.1-debug.apk.sha256
+      - name: Write release notes
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          cat > release-notes.md <<'NOTES'
+          ## BAR 1.0.1 — notification Stop action
+
+          Built from upstream [BAR](https://github.com/PatrykMis/BAR) commit [4b6a49ab3e53e1862bd49f07ac4007c1cba8af5e](https://github.com/PatrykMis/BAR/commit/4b6a49ab3e53e1862bd49f07ac4007c1cba8af5e), with a reproducible patch maintained in this release repository.
+
+          - Adds a **Stop** action to the persistent recording notification, alongside Pause/Resume.
+          - Stop requests the recorder's normal cancellation path so buffered audio is finalized, output-file handling and selected output settings remain in BAR's existing pipeline, and the service exits after the recording thread completes.
+          - License: GPL-3.0-only; retain upstream copyright and license notices.
+          - Build: debug/sideloading APK signed with Gradle's debug key; not a production or Play Store build.
+          - Package ID: com.patrykmis.bar.debug.
+          - Minimum Android version: Android 13 (API 33).
+          - SHA-256 checksum included as a release asset.
+
+          CI build success does not verify physical-device behavior. On the target phone, test Start, Pause, Resume, Stop while recording, Stop while paused, microphone indicator/access ending, saved file in the selected directory, selected audio format, and the Quick Settings tile state.
+          NOTES
+      - name: Publish versioned GitHub Release
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release create v1.0.1 release/BAR-1.0.1-debug.apk release/BAR-1.0.1-debug.apk.sha256 \
+            --repo "$GH_REPO" --title "BAR 1.0.1 — notification Stop action" --notes-file release-notes.md
