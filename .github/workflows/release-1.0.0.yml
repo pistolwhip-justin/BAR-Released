@@ -1,109 +1,87 @@
-# SPDX-FileCopyrightText: 2026 OpenAI
-# SPDX-License-Identifier: GPL-3.0-only
 name: Release BAR 1.0.0 APK
-
 on:
   workflow_dispatch:
-
 permissions:
   contents: write
-
 concurrency:
   group: bar-release-1.0.0
   cancel-in-progress: false
-
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Check whether this immutable release already exists
-        id: release_guard
+      - name: Guard immutable release
+        id: guard
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: v1.0.0
-          APK_NAME: BAR-1.0.0-debug.apk
         shell: bash
         run: |
           set -euo pipefail
-          if gh release view "$TAG" --repo "$GH_REPO" --json assets > release-assets.json 2>/dev/null; then
-            if jq -e --arg name "$APK_NAME" '.assets[] | select(.name == $name)' release-assets.json >/dev/null; then
-              echo "Release $TAG already contains $APK_NAME; leaving it unchanged."
+          if gh release view v1.0.0 --repo "$GH_REPO" --json assets > assets.json 2>/dev/null; then
+            if jq -e '.assets[] | select(.name == "BAR-1.0.0-debug.apk")' assets.json >/dev/null; then
               echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "Release already has the expected APK; leaving it unchanged."
               exit 0
             fi
-            echo "::error::Release $TAG exists but is missing its expected APK. Refusing to modify an existing release."
+            echo "::error::v1.0.0 exists without the expected APK; refusing to alter it."
             exit 1
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
-
-      - name: Check out release repository
-        if: steps.release_guard.outputs.skip != 'true'
+      - name: Checkout this release repository
+        if: steps.guard.outputs.skip != 'true'
         uses: actions/checkout@v6
-
-      - name: Check out upstream BAR source at a fixed commit
-        if: steps.release_guard.outputs.skip != 'true'
+      - name: Checkout pinned upstream BAR source
+        if: steps.guard.outputs.skip != 'true'
         uses: actions/checkout@v6
         with:
           repository: PatrykMis/BAR
           ref: 4b6a49ab3e53e1862bd49f07ac4007c1cba8af5e
           path: upstream/BAR
           persist-credentials: false
-
       - name: Set up JDK 25
-        if: steps.release_guard.outputs.skip != 'true'
+        if: steps.guard.outputs.skip != 'true'
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
           cache: gradle
           cache-dependency-path: upstream/BAR/gradle/wrapper/gradle-wrapper.properties
-
-      - name: Build and run available checks
-        if: steps.release_guard.outputs.skip != 'true'
+      - name: Build and run upstream checks
+        if: steps.guard.outputs.skip != 'true'
         working-directory: upstream/BAR
         run: ./gradlew build --no-daemon
-
-      - name: Verify APK exists and record checksum
-        if: steps.release_guard.outputs.skip != 'true'
-        env:
-          APK_NAME: BAR-1.0.0-debug.apk
+      - name: Verify APK and calculate checksum
+        if: steps.guard.outputs.skip != 'true'
         run: |
           set -euo pipefail
           APK="upstream/BAR/app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
           mkdir -p release
-          cp "$APK" "release/$APK_NAME"
-          sha256sum "release/$APK_NAME" | tee "release/$APK_NAME.sha256"
-
-      - name: Prepare release notes
-        if: steps.release_guard.outputs.skip != 'true'
+          cp "$APK" release/BAR-1.0.0-debug.apk
+          sha256sum release/BAR-1.0.0-debug.apk | tee release/BAR-1.0.0-debug.apk.sha256
+      - name: Write release notes
+        if: steps.guard.outputs.skip != 'true'
         run: |
           cat > release-notes.md <<'NOTES'
           ## BAR 1.0.0 — installable debug APK
+          Built from upstream [BAR](https://github.com/PatrykMis/BAR) commit [4b6a49ab3e53e1862bd49f07ac4007c1cba8af5e](https://github.com/PatrykMis/BAR/commit/4b6a49ab3e53e1862bd49f07ac4007c1cba8af5e).
 
-          This APK is built from the upstream BAR source repository at commit
-          [4b6a49ab3e53e1862bd49f07ac4007c1cba8af5e](https://github.com/PatrykMis/BAR/commit/4b6a49ab3e53e1862bd49f07ac4007c1cba8af5e).
+          - License: GPL-3.0-only; retain upstream copyright and license notices.
+          - Build: debug/sideloading APK signed with Gradle's debug key; not a production or Play Store build.
+          - Package ID: com.patrykmis.bar.debug.
+          - Minimum Android version: Android 13 (API 33).
+          - SHA-256 checksum included as a release asset.
 
-          - Upstream project: https://github.com/PatrykMis/BAR
-          - License: GPL-3.0-only; retain the upstream copyright and license notices.
-          - Build type: debug/sideloading APK, signed with the Gradle debug key; not a production or Play Store build.
-          - Package ID: com.patrykmis.bar.debug
-          - Upstream minimum Android version: Android 13 (API 33).
-          - SHA-256 checksum is included as a separate release asset.
-
-          CI build success does not establish installation or recording behavior on a physical device. Validate installation, microphone permission, Quick Settings tile, background recording, persistent notification, output file creation, and selected audio format on the target device.
+          CI success does not verify physical-device behavior. Test installation, microphone permission, Quick Settings tile, background recording, persistent notification, output-file creation, and audio format on the target phone.
           NOTES
-
-      - name: Publish immutable GitHub Release
-        if: steps.release_guard.outputs.skip != 'true'
+      - name: Publish versioned GitHub Release
+        if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           gh release create v1.0.0 release/BAR-1.0.0-debug.apk release/BAR-1.0.0-debug.apk.sha256 \
-            --repo "$GH_REPO" \
-            --title "BAR 1.0.0 — installable APK" \
-            --notes-file release-notes.md
+            --repo "$GH_REPO" --title "BAR 1.0.0 — installable APK" --notes-file release-notes.md
